@@ -1,0 +1,6 @@
+{
+    "require": {
+        "web3p/web3.php": "^0.3.2",
+        "firebase/php-jwt": "^6.11"
+    }
+}
