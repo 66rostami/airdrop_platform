@@ -29,20 +29,27 @@ define('RATE_LIMIT_WINDOW', 60); // پنجره زمانی به ثانیه
 define('RATE_LIMIT_MAX_REQUESTS', 100); // حداکثر درخواست در پنجره زمانی
 
 // تنظیمات CORS
+
+if (!defined('SECURITY_HEADERS')) {
+    define('SECURITY_HEADERS', [
+        'X-Frame-Options' => 'DENY',
+        'X-XSS-Protection' => '1; mode=block',
+        'X-Content-Type-Options' => 'nosniff',
+        'Referrer-Policy' => 'strict-origin-when-cross-origin',
+        'Content-Security-Policy' => "default-src 'self'"
+    ]);
+}
+
+// تنظیمات CORS را به‌روزرسانی کنید
 define('ALLOWED_ORIGINS', [
-    'https://your-frontend-domain.com',
-    'http://localhost:3000' // برای محیط توسعه
+    'http://localhost',
+    'http://localhost:3000',
+    'http://localhost:8080',
+    'http://127.0.0.1',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:8080'
+    // دامنه‌های اصلی خود را اضافه کنید
 ]);
-
-// تنظیمات امنیتی Headers
-define('SECURITY_HEADERS', [
-    'X-Frame-Options' => 'DENY',
-    'X-XSS-Protection' => '1; mode=block',
-    'X-Content-Type-Options' => 'nosniff',
-    'Referrer-Policy' => 'strict-origin-when-cross-origin',
-    'Content-Security-Policy' => "default-src 'self'"
-]);
-
 // تنظیمات لاگ
 define('LOG_AUTH_EVENTS', true);
 define('LOG_FILE_PATH', __DIR__ . '/logs/auth.log');

@@ -1,5 +1,39 @@
 <?php
-// در ابتدای auth.php
+require_once 'config.php';
+require_once 'functions.php';
+require_once 'wallet_auth.php';
+header('Access-Control-Allow-Origin: *'); // در محیط توسعه
+header('Access-Control-Allow-Methods: POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization');
+header('Content-Type: application/json; charset=utf-8');
+header('Access-Control-Allow-Origin: *'); // در محیط توسعه
+header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization');
+header('Access-Control-Allow-Credentials: true');
+header('Content-Type: application/json; charset=utf-8');
+
+// پاسخ به درخواست preflight
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
+
+// endpoint تست
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['test'])) {
+    echo json_encode([
+        'status' => 'ok',
+        'message' => 'Auth endpoint is working',
+        'time' => date('Y-m-d H:i:s'),
+        'config_loaded' => defined('ALLOWED_ORIGINS')
+    ]);
+    exit;
+}
+
+// پاسخ به درخواست preflight
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
@@ -9,7 +43,21 @@ require_once 'functions.php';
 require_once 'wallet_auth.php';
 
 header('Content-Type: application/json');
+set_error_handler(function($errno, $errstr, $errfile, $errline) {
+    error_log("Error [$errno] $errstr on line $errline in file $errfile");
+    return true;
+});
 
+
+
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['test'])) {
+    echo json_encode([
+        'status' => 'ok',
+        'message' => 'Auth endpoint is working',
+        'time' => date('Y-m-d H:i:s')
+    ]);
+    exit;
+}
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         // برای دیباگ

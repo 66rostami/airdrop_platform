@@ -86,7 +86,38 @@ if (isLoggedIn()) {
                 throw error;
             }
         }
+        async function handleLogin(walletAddress, signature, message) {
+    try {
+        const response = await fetch('/auth.php', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                wallet_address: walletAddress,
+                signature: signature,
+                message: message
+            }),
+            credentials: 'include'
+        });
 
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        if (!data.success) {
+            throw new Error(data.message || 'Login failed');
+        }
+
+        return data;
+
+    } catch (error) {
+        console.error('Login error:', error);
+        throw error;
+    }
+}
         async function checkAndSwitchNetwork() {
             const chainId = await window.ethereum.request({ method: 'eth_chainId' });
             if (chainId !== POLYGON_CHAIN_ID) {
