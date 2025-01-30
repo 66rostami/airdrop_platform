@@ -1,6 +1,6 @@
 <?php
 // wallet_auth.php
-// تاریخ: 2025-01-29 21:38:54
+// تاریخ: 2025-01-30 22:41:34
 // نویسنده: 66rostami
 
 require_once 'auth_config.php';
@@ -44,18 +44,17 @@ class WalletAuth {
             // بررسی یا ایجاد کاربر
             $user = $this->findOrCreateUser($walletAddress);
             
-            // ایجاد نشست جدید
-            $sessionManager = SessionManager::getInstance();
-            $session = $sessionManager->createSession(
-                $user['id'],
-                $_SERVER['HTTP_USER_AGENT'] ?? '',
-                $_SERVER['REMOTE_ADDR'] ?? ''
-            );
+            // به‌روزرسانی آخرین ورود
+            $stmt = $this->pdo->prepare("
+                UPDATE users 
+                SET last_login = NOW() 
+                WHERE id = :user_id
+            ");
+            $stmt->execute(['user_id' => $user['id']]);
 
             return [
                 'success' => true,
-                'user' => $user,
-                'session' => $session
+                'user' => $user
             ];
 
         } catch (Exception $e) {
@@ -65,14 +64,13 @@ class WalletAuth {
     }
 
     /**
-     * بررسی صحت امضا
+     * بررسی صحت امضا با استفاده از ethers
      */
     private function verifySignature(string $walletAddress, string $signature, string $message): bool {
         try {
-            // اینجا کد تأیید امضای بلاکچین قرار می‌گیرد
-            // این متد باید با توجه به نوع بلاکچین مورد استفاده پیاده‌سازی شود
-            
-            return true; // موقتاً همیشه true برمی‌گرداند
+            // در حال حاضر برای تست true برمی‌گرداند
+            // TODO: پیاده‌سازی تأیید امضا با استفاده از کتابخانه web3
+            return true;
 
         } catch (Exception $e) {
             $this->logError('خطا در بررسی امضا: ' . $e->getMessage());
@@ -87,7 +85,7 @@ class WalletAuth {
         try {
             // جستجوی کاربر موجود
             $stmt = $this->pdo->prepare("
-                SELECT id, wallet_address, username, created_at 
+                SELECT id, wallet_address, username, created_at, last_login
                 FROM users 
                 WHERE wallet_address = :wallet_address
             ");
@@ -104,9 +102,17 @@ class WalletAuth {
             
             $stmt = $this->pdo->prepare("
                 INSERT INTO users (
-                    wallet_address, username, status, created_at
+                    wallet_address, 
+                    username, 
+                    status, 
+                    created_at,
+                    last_login
                 ) VALUES (
-                    :wallet_address, :username, 'active', NOW()
+                    :wallet_address, 
+                    :username, 
+                    'active', 
+                    NOW(),
+                    NOW()
                 )
             ");
             
@@ -119,7 +125,8 @@ class WalletAuth {
                 'id' => $this->pdo->lastInsertId(),
                 'wallet_address' => $walletAddress,
                 'username' => $username,
-                'created_at' => date('Y-m-d H:i:s')
+                'created_at' => date('Y-m-d H:i:s'),
+                'last_login' => date('Y-m-d H:i:s')
             ];
 
         } catch (Exception $e) {
@@ -205,14 +212,14 @@ class WalletAuth {
      * ثبت خطا
      */
     private function logError(string $message): void {
-        if (LOG_ENABLED) {
+        if (defined('LOG_ENABLED') && LOG_ENABLED) {
             error_log(
                 sprintf("[%s] Wallet Auth Error: %s\n", 
                     date('Y-m-d H:i:s'), 
                     $message
                 ),
                 3,
-                LOG_FILE
+                defined('LOG_FILE') ? LOG_FILE : null
             );
         }
     }

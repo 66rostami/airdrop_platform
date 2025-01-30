@@ -1,4 +1,9 @@
 <?php
+// در ابتدای auth.php
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
 require_once 'config.php';
 require_once 'functions.php';
 require_once 'wallet_auth.php';
@@ -7,7 +12,9 @@ header('Content-Type: application/json');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
-        // دریافت و بررسی داده‌های ورودی
+        // برای دیباگ
+        error_log("Received POST request: " . file_get_contents('php://input'));
+
         $jsonInput = file_get_contents('php://input');
         if (!$jsonInput) {
             throw new Exception('No input received');
@@ -18,7 +25,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception('Invalid JSON: ' . json_last_error_msg());
         }
 
-        // بررسی وجود فیلدهای ضروری
+        // برای دیباگ
+        error_log("Decoded data: " . print_r($data, true));
+
         if (empty($data['wallet_address']) || empty($data['signature']) || empty($data['message'])) {
             throw new Exception('Wallet address, signature and message are required');
         }
@@ -34,6 +43,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // احراز هویت با کیف پول
         $walletAuth = WalletAuth::getInstance();
+        
+        // برای دیباگ
+        error_log("Authenticating wallet: " . $walletAddress);
+        
         $result = $walletAuth->authenticateWallet($walletAddress, $signature, $message);
 
         if (!$result['success']) {
@@ -52,8 +65,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['login_time'] = time();
         $_SESSION['last_activity'] = time();
 
-        // ثبت لاگ ورود موفق
-        error_log("Successful login: " . $walletAddress);
+        // برای دیباگ
+        error_log("Session data set: " . print_r($_SESSION, true));
 
         echo json_encode([
             'success' => true,
@@ -69,49 +82,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     } catch (Exception $e) {
         error_log("Authentication error: " . $e->getMessage());
-        http_response_code(400);
+        error_log("Stack trace: " . $e->getTraceAsString());
+        http_response_code(500);
         echo json_encode([
             'success' => false,
-            'message' => $e->getMessage()
+            'message' => 'Server error: ' . $e->getMessage(),
+            'debug' => [
+                'file' => $e->getFile(),
+                'line' => $e->getLine()
+            ]
         ]);
         exit;
     }
 }
-
-// بررسی وضعیت ورود (GET request)
-if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    if (isset($_GET['action']) && $_GET['action'] === 'logout') {
-        $wallet = isset($_SESSION['wallet_address']) ? $_SESSION['wallet_address'] : 'Unknown';
-        error_log("User logged out: " . $wallet);
-        
-        session_destroy();
-        echo json_encode([
-            'success' => true,
-            'message' => 'Logged out successfully'
-        ]);
-        exit;
-    }
-
-    // بررسی وضعیت ورود کاربر
-    $isLoggedIn = isset($_SESSION['user_id']) && isset($_SESSION['wallet_address']);
-    
-    echo json_encode([
-        'success' => $isLoggedIn,
-        'message' => $isLoggedIn ? 'User is logged in' : 'User is not logged in',
-        'data' => $isLoggedIn ? [
-            'user_id' => $_SESSION['user_id'],
-            'wallet_address' => $_SESSION['wallet_address'],
-            'username' => $_SESSION['username'] ?? null,
-            'last_activity' => date('Y-m-d H:i:s', $_SESSION['last_activity'])
-        ] : null
-    ]);
-    exit;
-}
-
-// درخواست‌های نامعتبر
-http_response_code(405);
-echo json_encode([
-    'success' => false,
-    'message' => 'Invalid request method'
-]);
-exit;

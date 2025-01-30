@@ -145,7 +145,11 @@ if (isLoggedIn()) {
 
         async function registerUser(walletAddress, signature, message) {
     try {
-        console.log('Sending data:', { wallet_address: walletAddress, signature, message }); // برای دیباگ
+        console.log('Sending auth request with:', {
+            wallet_address: walletAddress,
+            signature: signature,
+            message: message
+        });
 
         const response = await fetch('auth.php', {
             method: 'POST',
@@ -159,20 +163,27 @@ if (isLoggedIn()) {
             })
         });
 
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+        console.log('Response status:', response.status);
+        const responseText = await response.text();
+        console.log('Raw response:', responseText);
+
+        let data;
+        try {
+            data = JSON.parse(responseText);
+        } catch (e) {
+            console.error('Error parsing JSON:', e);
+            throw new Error('Invalid JSON response from server: ' + responseText);
         }
 
-        const data = await response.json();
-        console.log('Server response:', data); // برای دیباگ
+        console.log('Parsed response:', data);
 
         if (data.success) {
             window.location.href = 'dashboard.php';
         } else {
-            throw new Error(data.message || 'Registration failed');
+            throw new Error(data.message || 'Authentication failed');
         }
     } catch (error) {
-        console.error('Registration error:', error); // برای دیباگ
+        console.error('Registration error:', error);
         alert('Error registering user: ' + error.message);
     }
 }
