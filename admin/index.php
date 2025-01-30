@@ -1,7 +1,7 @@
 <?php
 // admin/index.php
 require_once '../config.php';
-require_once './functions.php'; // اصلاح مسیر
+require_once './functions.php'; // تغییر مسیر به فایل functions.php در پوشه admin
 // بررسی دسترسی ادمین
 if (!isAdmin()) {
     header('Location: ../index.php');
@@ -29,6 +29,7 @@ $stats = [
     <link href="assets/css/admin.css" rel="stylesheet">
 </head>
 <body>
+    
     <div class="container-fluid">
         <div class="row">
             <!-- Sidebar -->
