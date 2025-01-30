@@ -2,119 +2,125 @@
 // admin/functions.php
 require_once __DIR__ . '/../config.php';
 
-// بررسی دسترسی ادمین
-function isAdmin() {
-    if (!isset($_SESSION['admin_wallet']) || empty($_SESSION['admin_wallet'])) {
+// تمام توابع موجود را نگه می‌داریم و این توابع جدید را اضافه می‌کنیم:
+
+// دریافت آمار سیستم
+function getSystemStats() {
+    return [
+        'total_users' => getTotalUsers(),
+        'active_users_24h' => getActiveUsers24h(),
+        'total_points' => getTotalPointsDistributed(),
+        'completed_tasks' => getTotalTasksCompleted(),
+        'pending_referrals' => getPendingReferrals(),
+        'latest_registration' => getLatestRegistration()
+    ];
+}
+
+// دریافت آخرین ثبت نام
+function getLatestRegistration() {
+    global $db;
+    $stmt = $db->query("SELECT created_at FROM users ORDER BY created_at DESC LIMIT 1");
+    return $stmt->fetchColumn();
+}
+
+// دریافت لیست کاربران با فیلتر
+function getFilteredUsers($search = '', $filter = 'all', $page = 1, $perPage = 20) {
+    global $db;
+    
+    $offset = ($page - 1) * $perPage;
+    $where = [];
+    $params = [];
+    
+    if ($search) {
+        $where[] = "(wallet_address LIKE ? OR username LIKE ?)";
+        $params[] = "%$search%";
+        $params[] = "%$search%";
+    }
+    
+    switch ($filter) {
+        case 'active':
+            $where[] = "last_activity > DATE_SUB(NOW(), INTERVAL 7 DAY)";
+            break;
+        case 'banned':
+            $where[] = "is_banned = 1";
+            break;
+        case 'verified':
+            $where[] = "is_verified = 1";
+            break;
+    }
+    
+    $whereClause = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+    
+    $sql = "SELECT * FROM users $whereClause ORDER BY created_at DESC LIMIT ? OFFSET ?";
+    $params[] = $perPage;
+    $params[] = $offset;
+    
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
+    return $stmt->fetchAll();
+}
+
+// بهبود تابع logError برای ذخیره بیشتر جزئیات
+function logError($message, $severity = 'high', $context = []) {
+    global $db;
+    $contextJson = json_encode($context);
+    $stmt = $db->prepare("INSERT INTO system_logs (type, severity, message, context, created_at) 
+                         VALUES ('error', ?, ?, ?, NOW())");
+    $stmt->execute([$severity, $message, $contextJson]);
+}
+
+// دریافت آمار لاگ‌ها
+function getLogStats() {
+    global $db;
+    $stats = [];
+    
+    // تعداد خطاها در 24 ساعت گذشته
+    $stmt = $db->query("SELECT COUNT(*) FROM system_logs 
+                       WHERE type = 'error' 
+                       AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)");
+    $stats['errors_24h'] = $stmt->fetchColumn();
+    
+    // تعداد اکشن‌های ادمین
+    $stmt = $db->query("SELECT COUNT(*) FROM admin_logs 
+                       WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)");
+    $stats['admin_actions_24h'] = $stmt->fetchColumn();
+    
+    return $stats;
+}
+
+// فرمت کردن آدرس کیف پول
+function formatWalletAddress($address) {
+    if (strlen($address) > 10) {
+        return substr($address, 0, 6) . '...' . substr($address, -4);
+    }
+    return $address;
+}
+
+// بررسی فعال بودن ادمین
+function validateAdminSession() {
+    if (!isset($_SESSION['admin_last_activity'])) {
         return false;
     }
-
-    // بررسی زمان آخرین فعالیت
-    if (!isset($_SESSION['admin_last_activity']) || 
-        (time() - $_SESSION['admin_last_activity'] > ADMIN_SESSION_TIMEOUT)) {
-        session_unset();
+    
+    if (time() - $_SESSION['admin_last_activity'] > ADMIN_SESSION_TIMEOUT) {
         session_destroy();
         return false;
     }
-
-    // بررسی اعتبار کیف پول ادمین
-    if (!isAdminWallet($_SESSION['admin_wallet'])) {
-        session_unset();
-        session_destroy();
-        return false;
-    }
-
-    // به‌روزرسانی زمان آخرین فعالیت
+    
     $_SESSION['admin_last_activity'] = time();
     return true;
 }
 
-// بررسی آدرس کیف پول ادمین
-function isAdminWallet($wallet_address) {
+// دریافت تعداد تسک‌های در انتظار
+function getPendingTasksCount() {
     global $db;
-    $stmt = $db->prepare("SELECT id FROM admin_wallets WHERE wallet_address = ? AND is_active = 1");
-    $stmt->execute([$wallet_address]);
-    return $stmt->rowCount() > 0;
-}
-
-// تایید امضای ادمین
-function verifyAdminSignature($wallet_address, $signature) {
-    try {
-        global $db;
-        // اینجا باید امضای کیف پول را با استفاده از web3 بررسی کنید
-        // این یک نمونه ساده است و باید پیاده‌سازی شود
-        return true;
-    } catch (Exception $e) {
-        logError('Signature verification failed: ' . $e->getMessage());
-        return false;
-    }
-}
-
-// ثبت اکشن‌های ادمین
-function logAdminAction($wallet_address, $action, $description) {
-    global $db;
-    $stmt = $db->prepare("INSERT INTO admin_logs (wallet_address, action, description, ip_address, created_at) 
-                         VALUES (?, ?, ?, ?, NOW())");
-    $stmt->execute([$wallet_address, $action, $description, $_SERVER['REMOTE_ADDR']]);
-}
-
-// دریافت تعداد کل کاربران
-function getTotalUsers() {
-    global $db;
-    $stmt = $db->query("SELECT COUNT(*) FROM users WHERE is_banned = 0");
+    $stmt = $db->query("SELECT COUNT(*) FROM tasks WHERE status = 'pending'");
     return $stmt->fetchColumn();
 }
 
-// دریافت کاربران فعال در 24 ساعت گذشته
-function getActiveUsers24h() {
+// دریافت تعداد کاربران جدید امروز
+function getNewUsersToday() {
     global $db;
-    $stmt = $db->query("SELECT COUNT(DISTINCT user_id) FROM task_completions 
-                        WHERE completed_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)");
+    $stmt = $db->query("SELECT COUNT(*) FROM users WHERE DATE(created_at) = CURDATE()");
     return $stmt->fetchColumn();
-}
-
-// دریافت کل امتیازات توزیع شده
-function getTotalPointsDistributed() {
-    global $db;
-    $stmt = $db->query("SELECT COALESCE(SUM(points_earned), 0) 
-                        FROM task_completions WHERE status = 'completed'");
-    return $stmt->fetchColumn();
-}
-
-// دریافت تعداد کل تسک‌های تکمیل شده
-function getTotalTasksCompleted() {
-    global $db;
-    $stmt = $db->query("SELECT COUNT(*) FROM task_completions WHERE status = 'completed'");
-    return $stmt->fetchColumn();
-}
-
-// دریافت تعداد رفرال‌های در انتظار تأیید
-function getPendingReferrals() {
-    global $db;
-    $stmt = $db->query("SELECT COUNT(*) FROM referral_history WHERE status = 'pending'");
-    return $stmt->fetchColumn();
-}
-
-// دریافت فعالیت‌های اخیر
-function getRecentActivities($limit = 10) {
-    global $db;
-    $stmt = $db->prepare("SELECT sl.*, u.wallet_address as username 
-                         FROM system_logs sl 
-                         LEFT JOIN users u ON sl.user_id = u.id 
-                         ORDER BY sl.created_at DESC 
-                         LIMIT ?");
-    $stmt->execute([$limit]);
-    return $stmt->fetchAll();
-}
-
-// فرمت کردن تاریخ و زمان
-function formatDateTime($datetime) {
-    return date('Y-m-d H:i:s', strtotime($datetime));
-}
-
-// ثبت خطا در لاگ سیستم
-function logError($message) {
-    global $db;
-    $stmt = $db->prepare("INSERT INTO system_logs (type, severity, message, created_at) 
-                         VALUES ('error', 'high', ?, NOW())");
-    $stmt->execute([$message]);
 }
