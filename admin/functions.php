@@ -1,17 +1,26 @@
 <?php
 // admin/functions.php
 
+require_once '../functions.php';
+
 // بررسی دسترسی ادمین
 function isAdmin() {
-    return isset($_SESSION['admin_wallet']) && !empty($_SESSION['admin_wallet']);
-}
-
-// بررسی آدرس کیف پول ادمین
-function isAdminWallet($wallet_address) {
-    global $db;
-    $stmt = $db->prepare("SELECT id FROM admin_wallets WHERE wallet_address = ? AND is_active = 1");
-    $stmt->execute([$wallet_address]);
-    return $stmt->rowCount() > 0;
+    if (!isset($_SESSION['admin_wallet'])) {
+        return false;
+    }
+    
+    // بررسی زمان آخرین فعالیت
+    if (time() - $_SESSION['admin_last_activity'] > ADMIN_SESSION_TIMEOUT) {
+        unset($_SESSION['admin_wallet']);
+        unset($_SESSION['admin_last_activity']);
+        return false;
+    }
+    
+    // به‌روزرسانی زمان آخرین فعالیت
+    $_SESSION['admin_last_activity'] = time();
+    
+    // بررسی اینکه آیا کیف پول هنوز در لیست ادمین‌های فعال است
+    return isAdminWallet($_SESSION['admin_wallet']);
 }
 
 // تایید امضای ادمین
