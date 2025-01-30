@@ -18,8 +18,7 @@ define('POLYGON_RPC', 'https://polygon-rpc.com');
 define('MIN_POINTS_REQUIRED', 5000);
 define('DAILY_POINTS_LIMIT', 1000);
 define('MAX_REFERRALS_PER_DAY', 20);
-define('ADMIN_SESSION_TIMEOUT', 1800); // اضافه کردن timeout برای سشن ادمین
-
+define('ADMIN_SESSION_TIMEOUT', 3600); // اضافه کردن timeout برای سشن ادمین
 // Error Reporting
 error_reporting(E_ALL);
 ini_set('display_errors', 1);

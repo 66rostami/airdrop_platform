@@ -15,7 +15,51 @@ function getSystemStats() {
         'latest_registration' => getLatestRegistration()
     ];
 }
+// در فایل admin/functions.php تابع زیر را اضافه کنید
 
+/**
+ * بررسی می‌کند که آیا کاربر جاری ادمین است یا خیر
+ * @return bool
+ */
+function isAdmin() {
+    // بررسی وجود سشن
+    if (!isset($_SESSION)) {
+        session_start();
+    }
+
+    // بررسی وجود سشن ادمین
+    if (!isset($_SESSION['admin_wallet'])) {
+        return false;
+    }
+
+    // بررسی زمان آخرین فعالیت
+    if (isset($_SESSION['admin_last_activity'])) {
+        $inactive = time() - $_SESSION['admin_last_activity'];
+        
+        // اگر بیشتر از زمان تعیین شده غیرفعال بوده
+        if ($inactive >= ADMIN_SESSION_TIMEOUT) {
+            session_destroy();
+            return false;
+        }
+    }
+
+    // بررسی آدرس کیف پول ادمین در دیتابیس
+    global $db;
+    $stmt = $db->prepare("SELECT COUNT(*) FROM admins WHERE wallet_address = ? AND is_active = 1");
+    $stmt->execute([$_SESSION['admin_wallet']]);
+    $is_valid_admin = (bool)$stmt->fetchColumn();
+
+    if (!$is_valid_admin) {
+        // اگر ادمین معتبر نبود، سشن را پاک می‌کنیم
+        session_destroy();
+        return false;
+    }
+
+    // به‌روزرسانی زمان آخرین فعالیت
+    $_SESSION['admin_last_activity'] = time();
+
+    return true;
+}
 // دریافت آخرین ثبت نام
 function getLatestRegistration() {
     global $db;
@@ -124,6 +168,7 @@ function getNewUsersToday() {
     $stmt = $db->query("SELECT COUNT(*) FROM users WHERE DATE(created_at) = CURDATE()");
     return $stmt->fetchColumn();
 }
+
 // دریافت آمار فعالیت‌ها برای نمودار
 function getActivityStats($days = 7) {
     global $db;
@@ -165,30 +210,4 @@ function getActivityStats($days = 7) {
     }
     
     return $chartData;
-}
-
-// دریافت تعداد کاربران جدید امروز
-function getNewUsersToday() {
-    global $db;
-    $stmt = $db->query("SELECT COUNT(*) FROM users WHERE DATE(created_at) = CURRENT_DATE");
-    return $stmt->fetchColumn();
-}
-
-// دریافت آمار لاگ‌ها
-function getLogStats() {
-    global $db;
-    $stats = [];
-    
-    // تعداد خطاها در 24 ساعت گذشته
-    $stmt = $db->query("SELECT COUNT(*) FROM system_logs 
-                        WHERE type = 'error' 
-                        AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)");
-    $stats['errors_24h'] = $stmt->fetchColumn();
-    
-    // تعداد اکشن‌های ادمین
-    $stmt = $db->query("SELECT COUNT(*) FROM admin_logs 
-                        WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)");
-    $stats['admin_actions_24h'] = $stmt->fetchColumn();
-    
-    return $stats;
 }
