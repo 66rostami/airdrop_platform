@@ -124,3 +124,71 @@ function getNewUsersToday() {
     $stmt = $db->query("SELECT COUNT(*) FROM users WHERE DATE(created_at) = CURDATE()");
     return $stmt->fetchColumn();
 }
+// دریافت آمار فعالیت‌ها برای نمودار
+function getActivityStats($days = 7) {
+    global $db;
+    
+    $stats = [];
+    $query = "SELECT 
+                DATE(created_at) as date,
+                COUNT(*) as count
+              FROM system_logs
+              WHERE created_at >= DATE_SUB(CURRENT_DATE, INTERVAL ? DAY)
+              GROUP BY DATE(created_at)
+              ORDER BY date ASC";
+              
+    $stmt = $db->prepare($query);
+    $stmt->execute([$days]);
+    
+    // پر کردن روزهای خالی با صفر
+    $current = new DateTime("-{$days} days");
+    $end = new DateTime();
+    
+    while ($current <= $end) {
+        $currentDate = $current->format('Y-m-d');
+        $stats[$currentDate] = 0;
+        $current->modify('+1 day');
+    }
+    
+    // اضافه کردن داده‌های واقعی
+    while ($row = $stmt->fetch()) {
+        $stats[$row['date']] = (int)$row['count'];
+    }
+    
+    // تبدیل به آرایه برای نمودار
+    $chartData = [];
+    foreach ($stats as $date => $count) {
+        $chartData[] = [
+            'date' => $date,
+            'count' => $count
+        ];
+    }
+    
+    return $chartData;
+}
+
+// دریافت تعداد کاربران جدید امروز
+function getNewUsersToday() {
+    global $db;
+    $stmt = $db->query("SELECT COUNT(*) FROM users WHERE DATE(created_at) = CURRENT_DATE");
+    return $stmt->fetchColumn();
+}
+
+// دریافت آمار لاگ‌ها
+function getLogStats() {
+    global $db;
+    $stats = [];
+    
+    // تعداد خطاها در 24 ساعت گذشته
+    $stmt = $db->query("SELECT COUNT(*) FROM system_logs 
+                        WHERE type = 'error' 
+                        AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)");
+    $stats['errors_24h'] = $stmt->fetchColumn();
+    
+    // تعداد اکشن‌های ادمین
+    $stmt = $db->query("SELECT COUNT(*) FROM admin_logs 
+                        WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)");
+    $stats['admin_actions_24h'] = $stmt->fetchColumn();
+    
+    return $stats;
+}
