@@ -1,13 +1,13 @@
 <?php
 require_once 'config.php';
 require_once 'functions.php';
+require_once 'wallet_auth.php';
 
-header('Content-Type: application/json'); // تنظیم هدر JSON
+header('Content-Type: application/json');
 
-// Handle POST request for wallet connection
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
-        // Get JSON data from request body
+        // دریافت و بررسی داده‌های ورودی
         $jsonInput = file_get_contents('php://input');
         if (!$jsonInput) {
             throw new Exception('No input received');
@@ -18,49 +18,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception('Invalid JSON: ' . json_last_error_msg());
         }
 
-        if (!isset($data['wallet_address']) || !isset($data['signature']) || !isset($data['message'])) {
+        // بررسی وجود فیلدهای ضروری
+        if (empty($data['wallet_address']) || empty($data['signature']) || empty($data['message'])) {
             throw new Exception('Wallet address, signature and message are required');
         }
 
-        $walletAddress = sanitizeInput($data['wallet_address']);
-        $signature = sanitizeInput($data['signature']);
-        $message = $data['message'];
+        $walletAddress = strtolower(trim($data['wallet_address']));
+        $signature = trim($data['signature']);
+        $message = trim($data['message']);
 
-        // Validate wallet address format
-        if (!validateWalletAddress($walletAddress)) {
+        // بررسی فرمت آدرس کیف پول
+        if (!preg_match('/^0x[a-fA-F0-9]{40}$/', $walletAddress)) {
             throw new Exception('Invalid wallet address format');
         }
 
-        // Get or create user
-        $user = getUserByWallet($walletAddress);
-        
-        if ($user) {
-            // Update last login time
-            $stmt = $pdo->prepare("UPDATE users SET last_login = :time WHERE wallet_address = :wallet");
-            $stmt->execute([
-                'time' => date('Y-m-d H:i:s'),
-                'wallet' => $walletAddress
-            ]);
-        } else {
-            // Create new user
-            if (!createUser($walletAddress)) {
-                throw new Exception('Error creating user account');
-            }
-            $user = getUserByWallet($walletAddress);
+        // احراز هویت با کیف پول
+        $walletAuth = WalletAuth::getInstance();
+        $result = $walletAuth->authenticateWallet($walletAddress, $signature, $message);
+
+        if (!$result['success']) {
+            throw new Exception('Authentication failed');
         }
 
-        // Set session data
-        $_SESSION['user_id'] = $user['id'];
+        // شروع session اگر شروع نشده است
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+
+        // ذخیره اطلاعات در session
+        $_SESSION['user_id'] = $result['user']['id'];
         $_SESSION['wallet_address'] = $walletAddress;
+        $_SESSION['username'] = $result['user']['username'];
         $_SESSION['login_time'] = time();
         $_SESSION['last_activity'] = time();
+
+        // ثبت لاگ ورود موفق
+        error_log("Successful login: " . $walletAddress);
 
         echo json_encode([
             'success' => true,
             'message' => 'Authentication successful',
             'data' => [
-                'user_id' => $user['id'],
+                'user_id' => $result['user']['id'],
                 'wallet_address' => $walletAddress,
+                'username' => $result['user']['username'],
                 'timestamp' => date('Y-m-d H:i:s')
             ]
         ]);
@@ -68,15 +69,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     } catch (Exception $e) {
         error_log("Authentication error: " . $e->getMessage());
+        http_response_code(400);
         echo json_encode([
             'success' => false,
-            'message' => 'Authentication failed: ' . $e->getMessage()
+            'message' => $e->getMessage()
         ]);
         exit;
     }
 }
 
-// Handle GET request for session check
+// بررسی وضعیت ورود (GET request)
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     if (isset($_GET['action']) && $_GET['action'] === 'logout') {
         $wallet = isset($_SESSION['wallet_address']) ? $_SESSION['wallet_address'] : 'Unknown';
@@ -90,19 +92,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         exit;
     }
 
+    // بررسی وضعیت ورود کاربر
+    $isLoggedIn = isset($_SESSION['user_id']) && isset($_SESSION['wallet_address']);
+    
     echo json_encode([
-        'success' => isLoggedIn(),
-        'message' => isLoggedIn() ? 'User is logged in' : 'User is not logged in',
-        'data' => isLoggedIn() ? [
+        'success' => $isLoggedIn,
+        'message' => $isLoggedIn ? 'User is logged in' : 'User is not logged in',
+        'data' => $isLoggedIn ? [
             'user_id' => $_SESSION['user_id'],
             'wallet_address' => $_SESSION['wallet_address'],
+            'username' => $_SESSION['username'] ?? null,
             'last_activity' => date('Y-m-d H:i:s', $_SESSION['last_activity'])
         ] : null
     ]);
     exit;
 }
 
-// Handle invalid request methods
+// درخواست‌های نامعتبر
+http_response_code(405);
 echo json_encode([
     'success' => false,
     'message' => 'Invalid request method'

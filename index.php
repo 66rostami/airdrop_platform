@@ -144,28 +144,38 @@ if (isLoggedIn()) {
         }
 
         async function registerUser(walletAddress, signature, message) {
-            try {
-                const response = await fetch('auth.php', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ 
-                        wallet_address: walletAddress,
-                        signature: signature,
-                        message: message
-                    })
-                });
-                const data = await response.json();
-                if (data.success) {
-                    window.location.href = 'dashboard.php';
-                } else {
-                    alert(data.message);
-                }
-            } catch (error) {
-                alert('Error registering user: ' + error.message);
-            }
+    try {
+        console.log('Sending data:', { wallet_address: walletAddress, signature, message }); // برای دیباگ
+
+        const response = await fetch('auth.php', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+                wallet_address: walletAddress,
+                signature: signature,
+                message: message
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
         }
+
+        const data = await response.json();
+        console.log('Server response:', data); // برای دیباگ
+
+        if (data.success) {
+            window.location.href = 'dashboard.php';
+        } else {
+            throw new Error(data.message || 'Registration failed');
+        }
+    } catch (error) {
+        console.error('Registration error:', error); // برای دیباگ
+        alert('Error registering user: ' + error.message);
+    }
+}
 
         // Listen for network changes
         if (window.ethereum) {
