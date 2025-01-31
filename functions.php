@@ -1,340 +1,449 @@
 <?php
-// functions.php
+/**
+ * Core Functions File
+ * Author: 66rostami
+ * Updated: 2025-01-31 22:47:10
+ */
 
-// اطمینان از دسترسی به متغیر دیتابیس
-global $pdo;
+// Prevent direct access
+if (!defined('ALLOW_ACCESS')) {
+    header($_SERVER['SERVER_PROTOCOL'] . ' 403 Forbidden');
+    exit('Direct access forbidden');
+}
+
+// Require essential files
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/database.php';
+
+// Blockchain Integration Functions
+class Web3Integration {
+    private static $provider = null;
+    
+    public static function init() {
+        if (self::$provider === null) {
+            self::$provider = new Web3(POLYGON_RPC);
+        }
+        return self::$provider;
+    }
+    
+    public static function verifySignature($message, $signature, $address) {
+        try {
+            $web3 = self::init();
+            $personal = $web3->personal;
+            return $personal->ecRecover($message, $signature) === strtolower($address);
+        } catch (Exception $e) {
+            error_log("Signature verification failed: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    public static function verifyContract($address) {
+        try {
+            $web3 = self::init();
+            $code = $web3->eth->getCode($address);
+            return $code !== '0x';
+        } catch (Exception $e) {
+            error_log("Contract verification failed: " . $e->getMessage());
+            return false;
+        }
+    }
+}
 
 // Security and Validation Functions
-function sanitizeInput($input) {
-    return htmlspecialchars(strip_tags(trim($input)), ENT_QUOTES, 'UTF-8');
-}
-
-function validateWalletAddress($address) {
-    return (bool) preg_match('/^0x[a-fA-F0-9]{40}$/', $address);
-}
-
-// User Management Functions
-function createUser($walletAddress) {
-    global $pdo;
-    try {
-        if (!$pdo) {
-            throw new PDOException("Database connection not available");
+class Security {
+    public static function sanitizeInput($input) {
+        if (is_array($input)) {
+            return array_map([self::class, 'sanitizeInput'], $input);
         }
-
-        $stmt = $pdo->prepare("
-            INSERT INTO users (wallet_address, referral_code, created_at, last_login, points) 
-            VALUES (:wallet, :ref_code, :created, :login, :points)
-        ");
+        return htmlspecialchars(strip_tags(trim($input)), ENT_QUOTES, 'UTF-8');
+    }
+    
+    public static function validateWalletAddress($address) {
+        return (bool) preg_match('/^0x[a-fA-F0-9]{40}$/', strtolower($address));
+    }
+    
+    public static function generateNonce() {
+        return bin2hex(random_bytes(16));
+    }
+    
+    public static function validateSignature($message, $signature, $address) {
+        return Web3Integration::verifySignature($message, $signature, $address);
+    }
+    
+    public static function rateLimit($key, $limit = 60, $period = 60) {
+        $db = db();
+        $current = time();
+        $keyHash = hash('sha256', $key);
         
-        $currentTime = date('Y-m-d H:i:s');
-        $referralCode = generateReferralCode();
-        
-        $result = $stmt->execute([
-            'wallet' => $walletAddress,
-            'ref_code' => $referralCode,
-            'created' => $currentTime,
-            'login' => $currentTime,
-            'points' => 0
+        $attempts = $db->select('rate_limits', [
+            'where' => ['key_hash' => $keyHash],
+            'single' => true
         ]);
+        
+        if (!$attempts) {
+            $db->insert('rate_limits', [
+                'key_hash' => $keyHash,
+                'attempts' => 1,
+                'timestamp' => $current
+            ]);
+            return true;
+        }
+        
+        if ($current - $attempts['timestamp'] > $period) {
+            $db->update('rate_limits', 
+                ['attempts' => 1, 'timestamp' => $current],
+                ['key_hash' => $keyHash]
+            );
+            return true;
+        }
+        
+        if ($attempts['attempts'] >= $limit) {
+            return false;
+        }
+        
+        $db->update('rate_limits',
+            ['attempts' => $attempts['attempts'] + 1],
+            ['key_hash' => $keyHash]
+        );
+        return true;
+    }
+}
 
-        if ($result) {
-            $userId = $pdo->lastInsertId();
-            // اضافه کردن لاگ فعالیت برای ثبت‌نام جدید
-            logUserActivity($userId, 'registration', 'New user registration');
+// User Management Class
+class UserManager {
+    private $db;
+    
+    public function __construct() {
+        $this->db = db();
+    }
+    
+    public function createUser($walletAddress, $referralCode = null) {
+        try {
+            $this->db->beginTransaction();
+            
+            // Validate wallet address
+            if (!Security::validateWalletAddress($walletAddress)) {
+                throw new Exception("Invalid wallet address");
+            }
+            
+            // Check if user exists
+            if ($this->getUserByWallet($walletAddress)) {
+                throw new Exception("Wallet address already registered");
+            }
+            
+            $userData = [
+                'wallet_address' => strtolower($walletAddress),
+                'referral_code' => $this->generateUniqueReferralCode(),
+                'points' => WELCOME_BONUS,
+                'created_at' => date('Y-m-d H:i:s'),
+                'updated_at' => date('Y-m-d H:i:s'),
+                'last_login' => date('Y-m-d H:i:s')
+            ];
+            
+            $userId = $this->db->insert('users', $userData);
+            
+            // Process referral if provided
+            if ($referralCode) {
+                $this->processReferral($referralCode, $userId);
+            }
+            
+            // Add welcome bonus
+            if (WELCOME_BONUS > 0) {
+                $this->addPoints($userId, WELCOME_BONUS, 'welcome', 'Welcome bonus');
+            }
+            
+            $this->db->commit();
             return $userId;
+            
+        } catch (Exception $e) {
+            $this->db->rollback();
+            error_log("Error creating user: " . $e->getMessage());
+            throw $e;
         }
-        return false;
-
-    } catch (PDOException $e) {
-        error_log("Error creating user: " . $e->getMessage());
-        return false;
     }
-}
-
-function getUserByWallet($walletAddress) {
-    global $pdo;
-    try {
-        if (!$pdo) {
-            throw new PDOException("Database connection not available");
+    public function getUserByWallet($walletAddress) {
+        return $this->db->select('users', [
+            'fields' => [
+                'u.*',
+                '(SELECT COALESCE(SUM(points), 0) FROM user_points WHERE user_id = u.id AND type = "earned") as total_earned',
+                '(SELECT COALESCE(SUM(points), 0) FROM user_points WHERE user_id = u.id AND type = "spent") as total_spent',
+                '(SELECT COUNT(*) FROM referrals WHERE referrer_id = u.id) as total_referrals'
+            ],
+            'where' => ['wallet_address' => strtolower($walletAddress)],
+            'single' => true
+        ]);
+    }
+    
+    public function getUserById($userId) {
+        return $this->db->select('users', [
+            'where' => ['id' => $userId],
+            'single' => true
+        ]);
+    }
+    
+    public function updateLastActivity($userId) {
+        return $this->db->update('users', 
+            ['last_activity' => date('Y-m-d H:i:s')],
+            ['id' => $userId]
+        );
+    }
+    
+    public function addPoints($userId, $points, $type, $description = '') {
+        try {
+            $this->db->beginTransaction();
+            
+            // Add points record
+            $this->db->insert('user_points', [
+                'user_id' => $userId,
+                'points' => $points,
+                'type' => $type,
+                'description' => $description,
+                'created_at' => date('Y-m-d H:i:s')
+            ]);
+            
+            // Update user total points
+            $this->db->raw(
+                "UPDATE users SET points = points + ? WHERE id = ?",
+                [$points, $userId]
+            );
+            
+            // Log activity
+            ActivityLogger::log($userId, 'points', "Points {$type}: {$points} - {$description}");
+            
+            $this->db->commit();
+            return true;
+        } catch (Exception $e) {
+            $this->db->rollback();
+            error_log("Error adding points: " . $e->getMessage());
+            return false;
         }
-
-        $stmt = $pdo->prepare("
-            SELECT 
-                u.*,
-                COALESCE(SUM(CASE WHEN p.type = 'earned' THEN p.points ELSE 0 END), 0) as total_earned,
-                COALESCE(SUM(CASE WHEN p.type = 'spent' THEN p.points ELSE 0 END), 0) as total_spent,
-                (SELECT COUNT(*) FROM referrals WHERE referrer_id = u.id) as total_referrals
-            FROM users u
-            LEFT JOIN user_points p ON u.id = p.user_id
-            WHERE u.wallet_address = :wallet
-            GROUP BY u.id
-        ");
-        
-        $stmt->execute(['wallet' => $walletAddress]);
-        return $stmt->fetch();
-
-    } catch (PDOException $e) {
-        error_log("Error getting user: " . $e->getMessage());
-        return false;
     }
-}
-
-function updateUserLastLogin($userId) {
-    global $pdo;
-    try {
-        if (!$pdo) {
-            throw new PDOException("Database connection not available");
+    
+    private function generateUniqueReferralCode($length = 8) {
+        do {
+            $code = strtoupper(bin2hex(random_bytes($length)));
+            $exists = $this->db->exists('users', ['referral_code' => $code]);
+        } while ($exists);
+        
+        return $code;
+    }
+    
+    private function processReferral($referralCode, $newUserId) {
+        $referrer = $this->db->select('users', [
+            'where' => ['referral_code' => $referralCode],
+            'single' => true
+        ]);
+        
+        if (!$referrer) {
+            return false;
         }
-
-        $stmt = $pdo->prepare("
-            UPDATE users 
-            SET last_login = :login,
-                last_activity = :activity
-            WHERE id = :id
-        ");
         
-        $currentTime = date('Y-m-d H:i:s');
-        return $stmt->execute([
-            'login' => $currentTime,
-            'activity' => $currentTime,
-            'id' => $userId
+        // Check daily limit
+        $dailyCount = $this->db->count('referrals', [
+            'referrer_id' => $referrer['id'],
+            'created_at' => ['>=', date('Y-m-d 00:00:00')]
         ]);
-
-    } catch (PDOException $e) {
-        error_log("Error updating last login: " . $e->getMessage());
-        return false;
-    }
-}
-
-// Points and Tasks Management
-function addUserPoints($userId, $points, $type, $description = '') {
-    global $pdo;
-    try {
-        $pdo->beginTransaction();
-
-        // افزودن امتیاز به جدول user_points
-        $stmt = $pdo->prepare("
-            INSERT INTO user_points (user_id, points, type, description, created_at)
-            VALUES (:user_id, :points, :type, :description, NOW())
-        ");
         
-        $stmt->execute([
-            'user_id' => $userId,
-            'points' => $points,
-            'type' => $type,
-            'description' => $description
-        ]);
-
-        // به‌روزرسانی مجموع امتیازات کاربر
-        $stmt = $pdo->prepare("
-            UPDATE users 
-            SET points = points + :points,
-                updated_at = NOW()
-            WHERE id = :user_id
-        ");
+        if ($dailyCount >= MAX_REFERRALS_PER_DAY) {
+            return false;
+        }
         
-        $stmt->execute([
-            'points' => $points,
-            'user_id' => $userId
+        // Create referral record
+        $this->db->insert('referrals', [
+            'referrer_id' => $referrer['id'],
+            'referred_id' => $newUserId,
+            'status' => 'completed',
+            'created_at' => date('Y-m-d H:i:s')
         ]);
-
-        $pdo->commit();
+        
+        // Add referral bonus
+        $this->addPoints(
+            $referrer['id'],
+            REFERRAL_BONUS,
+            'referral',
+            "Referral bonus for user #{$newUserId}"
+        );
+        
         return true;
-
-    } catch (Exception $e) {
-        if ($pdo->inTransaction()) {
-            $pdo->rollBack();
-        }
-        error_log("Error adding points: " . $e->getMessage());
-        return false;
     }
 }
 
-function getUserTasks($userId) {
-    global $pdo;
-    try {
-        $stmt = $pdo->prepare("
-            SELECT 
-                t.*,
-                COALESCE(ut.status, 'pending') as user_status,
-                ut.completed_at
-            FROM tasks t
-            LEFT JOIN user_tasks ut ON t.id = ut.task_id AND ut.user_id = :user_id
-            WHERE t.is_active = 1
-            ORDER BY t.priority DESC, t.created_at DESC
-        ");
-        
-        $stmt->execute(['user_id' => $userId]);
-        return $stmt->fetchAll();
-
-    } catch (PDOException $e) {
-        error_log("Error getting user tasks: " . $e->getMessage());
-        return [];
+// Task Management Class
+class TaskManager {
+    private $db;
+    
+    public function __construct() {
+        $this->db = db();
     }
-}
-
-// Referral System Functions
-function processReferral($referrerId, $newUserId) {
-    global $pdo;
-    try {
-        $pdo->beginTransaction();
-
-        // ایجاد رکورد رفرال
-        $stmt = $pdo->prepare("
-            INSERT INTO referrals (referrer_id, referred_id, status, created_at)
-            VALUES (:referrer_id, :referred_id, 'pending', NOW())
-        ");
-        
-        $stmt->execute([
-            'referrer_id' => $referrerId,
-            'referred_id' => $newUserId
+    
+    public function getUserTasks($userId) {
+        return $this->db->select('tasks', [
+            'fields' => [
+                't.*',
+                'COALESCE(ut.status, "pending") as user_status',
+                'ut.completed_at'
+            ],
+            'joins' => [[
+                'type' => 'LEFT',
+                'table' => 'user_tasks ut',
+                'condition' => "t.id = ut.task_id AND ut.user_id = {$userId}"
+            ]],
+            'where' => ['t.is_active' => 1],
+            'order' => ['t.priority' => 'DESC', 't.created_at' => 'DESC']
         ]);
-
-        // بررسی محدودیت رفرال روزانه
-        $dailyCount = getReferralCountToday($referrerId);
-        if ($dailyCount < MAX_REFERRALS_PER_DAY) {
-            // اضافه کردن امتیاز رفرال
-            addUserPoints($referrerId, REFERRAL_POINTS, 'referral', 'Referral bonus');
+    }
+    
+    public function completeTask($userId, $taskId) {
+        try {
+            $this->db->beginTransaction();
+            
+            // Get task details
+            $task = $this->db->select('tasks', [
+                'where' => ['id' => $taskId, 'is_active' => 1],
+                'single' => true
+            ]);
+            
+            if (!$task) {
+                throw new Exception("Task not found");
+            }
+            
+            // Check if already completed
+            $completed = $this->db->exists('user_tasks', [
+                'user_id' => $userId,
+                'task_id' => $taskId,
+                'status' => 'completed'
+            ]);
+            
+            if ($completed) {
+                throw new Exception("Task already completed");
+            }
+            
+            // Record completion
+            $this->db->insert('user_tasks', [
+                'user_id' => $userId,
+                'task_id' => $taskId,
+                'status' => 'completed',
+                'completed_at' => date('Y-m-d H:i:s')
+            ]);
+            
+            // Award points
+            $userManager = new UserManager();
+            $userManager->addPoints(
+                $userId,
+                $task['points'],
+                'task',
+                "Completed task: {$task['title']}"
+            );
+            
+            $this->db->commit();
+            return true;
+        } catch (Exception $e) {
+            $this->db->rollback();
+            error_log("Error completing task: " . $e->getMessage());
+            return false;
         }
-
-        $pdo->commit();
-        return true;
-
-    } catch (Exception $e) {
-        if ($pdo->inTransaction()) {
-            $pdo->rollBack();
-        }
-        error_log("Error processing referral: " . $e->getMessage());
-        return false;
     }
 }
 
-function getReferralCountToday($userId) {
-    global $pdo;
-    try {
-        $stmt = $pdo->prepare("
-            SELECT COUNT(*) 
-            FROM referrals 
-            WHERE referrer_id = :user_id 
-            AND DATE(created_at) = CURDATE()
-        ");
-        
-        $stmt->execute(['user_id' => $userId]);
-        return $stmt->fetchColumn();
-
-    } catch (PDOException $e) {
-        error_log("Error getting referral count: " . $e->getMessage());
-        return 0;
-    }
-}
-
-// Activity Logging
-function logUserActivity($userId, $action, $description = '') {
-    global $pdo;
-    try {
-        $stmt = $pdo->prepare("
-            INSERT INTO user_activities (user_id, action, description, created_at)
-            VALUES (:user_id, :action, :description, NOW())
-        ");
-        
-        return $stmt->execute([
+// Activity Logger
+class ActivityLogger {
+    public static function log($userId, $action, $description = '') {
+        $db = db();
+        return $db->insert('user_activities', [
             'user_id' => $userId,
             'action' => $action,
-            'description' => $description
+            'description' => $description,
+            'ip_address' => $_SERVER['REMOTE_ADDR'] ?? null,
+            'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? null,
+            'created_at' => date('Y-m-d H:i:s')
         ]);
-
-    } catch (PDOException $e) {
-        error_log("Error logging activity: " . $e->getMessage());
-        return false;
     }
-}
-
-// Statistics Functions
-function getTotalPointsDistributed() {
-    global $pdo;
-    try {
-        $stmt = $pdo->query("
-            SELECT COALESCE(SUM(points), 0) 
-            FROM user_points 
-            WHERE type = 'earned'
-        ");
-        return $stmt->fetchColumn();
-    } catch (PDOException $e) {
-        error_log("Error getting total points: " . $e->getMessage());
-        return 0;
-    }
-}
-
-function getTotalTasks() {
-    global $pdo;
-    try {
-        $stmt = $pdo->query("
-            SELECT COUNT(*) 
-            FROM tasks 
-            WHERE is_active = 1
-        ");
-        return $stmt->fetchColumn();
-    } catch (PDOException $e) {
-        error_log("Error getting total tasks: " . $e->getMessage());
-        return 0;
-    }
-}
-
-// Helper Functions
-function generateReferralCode($length = 8) {
-    $chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    $code = '';
-    do {
-        $code = '';
-        for ($i = 0; $i < $length; $i++) {
-            $code .= $chars[random_int(0, strlen($chars) - 1)];
-        }
-        // بررسی یکتا بودن کد
-    } while (!isReferralCodeUnique($code));
     
-    return $code;
-}
-
-function isReferralCodeUnique($code) {
-    global $pdo;
-    try {
-        $stmt = $pdo->prepare("
-            SELECT COUNT(*) 
-            FROM users 
-            WHERE referral_code = :code
-        ");
-        
-        $stmt->execute(['code' => $code]);
-        return $stmt->fetchColumn() === 0;
-
-    } catch (PDOException $e) {
-        error_log("Error checking referral code: " . $e->getMessage());
-        return false;
+    public static function getRecentActivities($limit = 10) {
+        $db = db();
+        return $db->select('user_activities', [
+            'fields' => [
+                'a.*',
+                'u.username',
+                'u.wallet_address'
+            ],
+            'joins' => [[
+                'type' => 'LEFT',
+                'table' => 'users u',
+                'condition' => 'a.user_id = u.id'
+            ]],
+            'order' => ['a.created_at' => 'DESC'],
+            'limit' => $limit
+        ]);
     }
 }
 
 // Session Management
-function isLoggedIn() {
-    return isset($_SESSION['user_id']) && 
-           isset($_SESSION['wallet_address']) && 
-           !empty($_SESSION['user_id']) && 
-           !empty($_SESSION['wallet_address']);
+class SessionManager {
+    public static function init() {
+        if (session_status() === PHP_SESSION_NONE) {
+            ini_set('session.cookie_httponly', 1);
+            ini_set('session.use_only_cookies', 1);
+            ini_set('session.cookie_secure', !IS_DEVELOPMENT);
+            session_start();
+        }
+    }
+    
+    public static function set($key, $value) {
+        $_SESSION[$key] = $value;
+    }
+    
+    public static function get($key, $default = null) {
+        return $_SESSION[$key] ?? $default;
+    }
+    
+    public static function destroy() {
+        $_SESSION = [];
+        if (isset($_COOKIE[session_name()])) {
+            setcookie(session_name(), '', time() - 3600, '/');
+        }
+        session_destroy();
+    }
+    
+    public static function isLoggedIn() {
+        return isset($_SESSION['user_id']) && 
+               isset($_SESSION['wallet_address']) && 
+               !empty($_SESSION['user_id']) && 
+               !empty($_SESSION['wallet_address']);
+    }
+    
+    public static function requireLogin() {
+        if (!self::isLoggedIn()) {
+            header('Location: /login.php');
+            exit;
+        }
+    }
 }
 
-function logout() {
-    if (isset($_SESSION['user_id'])) {
-        // ثبت خروج در لاگ فعالیت‌ها
-        logUserActivity($_SESSION['user_id'], 'logout', 'User logged out');
+// Initialize session
+SessionManager::init();
+
+// Global helper functions
+function getCurrentUser() {
+    if (!SessionManager::isLoggedIn()) {
+        return null;
     }
     
-    // پاک کردن تمام متغیرهای سشن
-    $_SESSION = array();
-    
-    // از بین بردن کوکی سشن
-    if (isset($_COOKIE[session_name()])) {
-        setcookie(session_name(), '', time()-3600, '/');
+    $userManager = new UserManager();
+    return $userManager->getUserById(SessionManager::get('user_id'));
+}
+
+function formatPoints($points) {
+    return number_format($points, 0, '.', ',');
+}
+
+function formatWalletAddress($address, $length = 8) {
+    if (strlen($address) <= $length * 2) {
+        return $address;
     }
-    
-    // نابود کردن سشن
-    session_destroy();
+    return substr($address, 0, $length) . '...' . substr($address, -$length);
+}
+
+function generateLoginMessage($nonce) {
+    return "Welcome to Airdrop Platform!\n\nNonce: {$nonce}\nTimestamp: " . time();
 }
