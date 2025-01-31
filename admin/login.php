@@ -1,27 +1,12 @@
 <?php
 // admin/login.php
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
 session_start();
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/functions.php';
-
-// تعریف توابع مورد نیاز که در فایل نیست
-function verifyAdminSignature($wallet_address, $signature) {
-    // برای تست فعلاً true برمی‌گرداند
-    return true;
-}
-
-function isAdminWallet($wallet_address) {
-    global $db;
-    $stmt = $db->prepare("SELECT COUNT(*) FROM admins WHERE wallet_address = ? AND is_active = 1");
-    $stmt->execute([$wallet_address]);
-    return (bool)$stmt->fetchColumn();
-}
-
-function logAdminAction($wallet_address, $action, $description) {
-    global $db;
-    $stmt = $db->prepare("INSERT INTO admin_logs (wallet_address, action, description, created_at) VALUES (?, ?, ?, NOW())");
-    return $stmt->execute([$wallet_address, $action, $description]);
-}
 
 // اگر کاربر قبلاً لاگین کرده است
 if (isset($_SESSION['admin_wallet'])) {
@@ -32,10 +17,26 @@ if (isset($_SESSION['admin_wallet'])) {
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    header('Content-Type: application/json');
     try {
-        $wallet_address = strtolower(trim($_POST['wallet_address']));
-        $signature = trim($_POST['signature']);
+        // دریافت داده‌های JSON
+        $input = file_get_contents('php://input');
+        error_log("Received input: " . $input); // برای دیباگ
+
+        $data = json_decode($input, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            throw new Exception('Invalid JSON data: ' . json_last_error_msg());
+        }
+
+        error_log("Decoded data: " . print_r($data, true)); // برای دیباگ
         
+        $wallet_address = strtolower(trim($data['wallet_address'] ?? ''));
+        $signature = trim($data['signature'] ?? '');
+        
+        if (empty($wallet_address) || empty($signature)) {
+            throw new Exception('Wallet address and signature are required');
+        }
+
         // بررسی اعتبار امضا و آدرس کیف پول
         if (verifyAdminSignature($wallet_address, $signature)) {
             // بررسی اینکه آیا این آدرس کیف پول ادمین است
@@ -47,9 +48,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // ثبت لاگ ورود
                 logAdminAction($wallet_address, 'login', 'Admin logged in successfully');
                 
-                // برگرداندن پاسخ JSON
                 echo json_encode(['success' => true, 'redirect' => 'index.php']);
-                exit;
             } else {
                 throw new Exception('This wallet address is not authorized as admin.');
             }
@@ -57,10 +56,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception('Invalid signature or wallet address.');
         }
     } catch (Exception $e) {
-        $error = $e->getMessage();
-        echo json_encode(['success' => false, 'error' => $error]);
-        exit;
+        error_log("Login error: " . $e->getMessage()); // برای دیباگ
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
     }
+    exit;
 }
 ?>
 <!DOCTYPE html>
@@ -165,19 +164,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 showLoading('Verifying...');
 
-                // Send to server
-                const response = await fetch('login.php', {
+                const response = await fetch(window.location.href, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Content-Type': 'application/json',
                     },
-                    body: new URLSearchParams({
+                    body: JSON.stringify({
                         wallet_address: walletAddress,
-                        signature: signature
+                        signature: signature,
+                        message: message
                     })
                 });
 
                 const data = await response.json();
+                console.log('Server response:', data); // برای دیباگ
 
                 if (data.success) {
                     window.location.href = data.redirect;

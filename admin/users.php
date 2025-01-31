@@ -1,7 +1,7 @@
 <?php
 // admin/users.php
-require_once '../config.php';
-require_once '../functions.php';
+require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/functions.php';  // Changed from '../functions.php' to './functions.php'
 
 // بررسی دسترسی ادمین
 if (!isAdmin()) {
