@@ -6,26 +6,44 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// Database Configuration
-if (!defined('DB_HOST')) define('DB_HOST', 'localhost');
-if (!defined('DB_NAME')) define('DB_NAME', 'airdrop_platform');
-if (!defined('DB_USER')) define('DB_USER', 'root');
-if (!defined('DB_PASS')) define('DB_PASS', '');
-
-// Application Configuration
-define('SITE_NAME', 'Airdrop Platform');
-define('POLYGON_RPC', 'https://polygon-rpc.com');
-define('MIN_POINTS_REQUIRED', 5000);
-define('DAILY_POINTS_LIMIT', 1000);
-define('MAX_REFERRALS_PER_DAY', 20);
-define('ADMIN_SESSION_TIMEOUT', 3600); // اضافه کردن timeout برای سشن ادمین
 // Error Reporting
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+
+// Database Configuration
+$db_constants = [
+    'DB_HOST' => 'localhost',
+    'DB_NAME' => 'airdrop_platform',
+    'DB_USER' => 'root',
+    'DB_PASS' => ''
+];
+
+foreach ($db_constants as $const => $value) {
+    if (!defined($const)) {
+        define($const, $value);
+    }
+}
+
+// Application Configuration
+$app_constants = [
+    'SITE_NAME' => 'Airdrop Platform',
+    'POLYGON_RPC' => 'https://polygon-rpc.com',
+    'MIN_POINTS_REQUIRED' => 5000,
+    'DAILY_POINTS_LIMIT' => 1000,
+    'MAX_REFERRALS_PER_DAY' => 20,
+    'ADMIN_SESSION_TIMEOUT' => 3600
+];
+
+foreach ($app_constants as $const => $value) {
+    if (!defined($const)) {
+        define($const, $value);
+    }
+}
 
 // Database Connection
 try {
-    $db = new PDO(  // تغییر نام متغیر از $pdo به $db
+    $db = new PDO(
         "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4",
         DB_USER,
         DB_PASS,
@@ -36,6 +54,7 @@ try {
         ]
     );
 } catch (PDOException $e) {
+    error_log("Database Connection Error: " . $e->getMessage());
     die("Connection failed: " . $e->getMessage());
 }
 
