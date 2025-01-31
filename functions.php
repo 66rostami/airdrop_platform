@@ -33,7 +33,31 @@ function createUser($walletAddress) {
         return false;
     }
 }
+function verifyUserSignature($walletAddress, $signature) {
+    // برای تست فعلاً true برمی‌گرداند
+    return true;
+}
 
+function createOrUpdateUser($walletAddress) {
+    global $db;
+    
+    // چک کردن وجود کاربر
+    $stmt = $db->prepare("SELECT id FROM users WHERE wallet_address = ?");
+    $stmt->execute([$walletAddress]);
+    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if ($user) {
+        // بروزرسانی آخرین ورود
+        $stmt = $db->prepare("UPDATE users SET last_login = NOW() WHERE id = ?");
+        $stmt->execute([$user['id']]);
+        return $user['id'];
+    }
+    
+    // ایجاد کاربر جدید
+    $stmt = $db->prepare("INSERT INTO users (wallet_address, created_at) VALUES (?, NOW())");
+    $stmt->execute([$walletAddress]);
+    return $db->lastInsertId();
+}
 function getUserByWallet($walletAddress) {
     global $pdo;
     try {
