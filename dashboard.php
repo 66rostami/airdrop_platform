@@ -1,499 +1,508 @@
 <?php
 /**
- * Database Management Class and Helper Functions
+ * User Dashboard
  * Author: 66rostami
- * Updated: 2025-01-31 22:42:51
+ * Updated: 2025-02-01 12:52:24
  */
 
-// Prevent direct access
-if (!defined('ALLOW_ACCESS')) {
-    header($_SERVER['SERVER_PROTOCOL'] . ' 403 Forbidden');
-    exit('Direct access forbidden');
+define('ALLOW_ACCESS', true);
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/functions.php';
+
+// Check if user is logged in
+if (!SessionManager::isLoggedIn()) {
+    header('Location: index.php');
+    exit;
 }
 
-// Require configuration
-require_once __DIR__ . '/../config.php';
-
-class Database {
-    private static $instance = null;
-    private $connection;
-    private $transactions = 0;
-    private $queryLog = [];
-    private $queryCount = 0;
-    private $cached_queries = [];
-    private $cache_enabled = true;
+try {
+    // Get user data
+    $userId = SessionManager::get('user_id');
+    $userManager = new UserManager();
+    $user = $userManager->getUserById($userId);
     
-    private function __construct() {
-        try {
-            $this->connection = new PDO(
-                sprintf(
-                    "mysql:host=%s;port=%s;dbname=%s;charset=%s",
-                    DB_HOST,
-                    DB_PORT,
-                    DB_NAME,
-                    DB_CHARSET
-                ),
-                DB_USER,
-                DB_PASS,
-                [
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::ATTR_EMULATE_PREPARES => false,
-                    PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES " . DB_CHARSET . " COLLATE " . DB_CHARSET . "_unicode_ci",
-                    PDO::ATTR_PERSISTENT => true
-                ]
-            );
-            
-            // Set timezone
-            $this->connection->exec("SET time_zone = '+00:00'");
-            
-        } catch (PDOException $e) {
-            $this->logError('Connection failed', $e);
-            throw new Exception("Database connection failed");
-        }
+    if (!$user) {
+        throw new Exception('User not found');
     }
-
-    // Singleton pattern
-    public static function getInstance() {
-        if (self::$instance === null) {
-            self::$instance = new self();
-        }
-        return self::$instance;
-    }
-
-    // Basic Query Methods
-    public function query($sql, $params = [], $cache_ttl = 0) {
-        $cache_key = $this->generateCacheKey($sql, $params);
-        
-        // Check cache if enabled and TTL > 0
-        if ($this->cache_enabled && $cache_ttl > 0 && isset($this->cached_queries[$cache_key])) {
-            if (time() - $this->cached_queries[$cache_key]['time'] < $cache_ttl) {
-                return $this->cached_queries[$cache_key]['result'];
-            }
-        }
-        
-        $start = microtime(true);
-        
-        try {
-            $stmt = $this->connection->prepare($sql);
-            $stmt->execute($params);
-            
-            $this->logQuery($sql, $params, microtime(true) - $start);
-            $this->queryCount++;
-            
-            // Cache result if needed
-            if ($this->cache_enabled && $cache_ttl > 0) {
-                $this->cached_queries[$cache_key] = [
-                    'time' => time(),
-                    'result' => $stmt
-                ];
-            }
-            
-            return $stmt;
-        } catch (PDOException $e) {
-            $this->logError('Query failed: ' . $sql, $e, $params);
-            throw $e;
-        }
-    }
-
-    // Advanced CRUD Operations
-    public function insert($table, $data, $ignore = false) {
-        $fields = array_keys($data);
-        $values = array_values($data);
-        $placeholders = str_repeat('?,', count($fields) - 1) . '?';
-        
-        $sql = sprintf(
-            "INSERT %s INTO %s (%s) VALUES (%s)",
-            $ignore ? 'IGNORE' : '',
-            escape_identifier($table),
-            implode(',', array_map('escape_identifier', $fields)),
-            $placeholders
-        );
-        
-        $this->query($sql, $values);
-        return $this->connection->lastInsertId();
-    }
-
-    public function insertBatch($table, $data) {
-        if (empty($data)) return false;
-        
-        $fields = array_keys($data[0]);
-        $placeholders = '(' . str_repeat('?,', count($fields) - 1) . '?)';
-        $values = [];
-        
-        foreach ($data as $row) {
-            $values = array_merge($values, array_values($row));
-        }
-        
-        $sql = sprintf(
-            "INSERT INTO %s (%s) VALUES %s",
-            escape_identifier($table),
-            implode(',', array_map('escape_identifier', $fields)),
-            str_repeat($placeholders . ',', count($data) - 1) . $placeholders
-        );
-        
-        return $this->query($sql, $values)->rowCount();
-    }
-
-    public function select($table, $options = []) {
-        $sql = "SELECT ";
-        $params = [];
-        
-        // Fields with alias support
-        if (isset($options['fields'])) {
-            $fields = [];
-            foreach ($options['fields'] as $key => $field) {
-                if (is_string($key)) {
-                    $fields[] = escape_identifier($field) . ' AS ' . escape_identifier($key);
-                } else {
-                    $fields[] = escape_identifier($field);
-                }
-            }
-            $sql .= implode(',', $fields);
-        } else {
-            $sql .= '*';
-        }
-        
-        $sql .= " FROM " . escape_identifier($table);
-        
-        // Complex Joins
-        if (!empty($options['joins'])) {
-            foreach ($options['joins'] as $join) {
-                $sql .= " " . strtoupper($join['type']) . " JOIN " . escape_identifier($join['table']);
-                if (isset($join['alias'])) {
-                    $sql .= " AS " . escape_identifier($join['alias']);
-                }
-                $sql .= " ON " . $join['condition'];
-            }
-        }
-        // Advanced Where Conditions
-        if (!empty($options['where'])) {
-            $sql .= " WHERE ";
-            $whereConditions = [];
-            
-            foreach ($options['where'] as $field => $value) {
-                if (is_array($value)) {
-                    switch ($value[0]) {
-                        case 'IN':
-                            $in_placeholders = str_repeat('?,', count($value[1]) - 1) . '?';
-                            $whereConditions[] = "$field IN ($in_placeholders)";
-                            $params = array_merge($params, $value[1]);
-                            break;
-                        case 'BETWEEN':
-                            $whereConditions[] = "$field BETWEEN ? AND ?";
-                            $params[] = $value[1];
-                            $params[] = $value[2];
-                            break;
-                        case 'LIKE':
-                            $whereConditions[] = "$field LIKE ?";
-                            $params[] = $value[1];
-                            break;
-                        case 'NULL':
-                            $whereConditions[] = "$field IS NULL";
-                            break;
-                        case 'NOT NULL':
-                            $whereConditions[] = "$field IS NOT NULL";
-                            break;
-                        default:
-                            $whereConditions[] = "$field " . $value[0] . " ?";
-                            $params[] = $value[1];
-                    }
-                } else {
-                    $whereConditions[] = "$field = ?";
-                    $params[] = $value;
-                }
-            }
-            
-            $sql .= implode(' AND ', $whereConditions);
-        }
-        
-        // Group By with Having
-        if (!empty($options['group'])) {
-            $sql .= " GROUP BY " . implode(',', array_map('escape_identifier', $options['group']));
-            
-            if (!empty($options['having'])) {
-                $sql .= " HAVING " . $options['having'];
-            }
-        }
-        
-        // Order By with multiple fields
-        if (!empty($options['order'])) {
-            $sql .= " ORDER BY ";
-            if (is_array($options['order'])) {
-                $orderParts = [];
-                foreach ($options['order'] as $field => $direction) {
-                    $orderParts[] = escape_identifier($field) . ' ' . strtoupper($direction);
-                }
-                $sql .= implode(', ', $orderParts);
-            } else {
-                $sql .= $options['order'];
-            }
-        }
-        
-        // Limit & Offset
-        if (!empty($options['limit'])) {
-            $sql .= " LIMIT " . (int)$options['limit'];
-            if (!empty($options['offset'])) {
-                $sql .= " OFFSET " . (int)$options['offset'];
-            }
-        }
-        
-        $cache_ttl = $options['cache_ttl'] ?? 0;
-        $stmt = $this->query($sql, $params, $cache_ttl);
-        return $options['single'] ?? false ? $stmt->fetch() : $stmt->fetchAll();
-    }
-
-    public function update($table, $data, $where, $limit = null) {
-        $sets = [];
-        $params = [];
-        
-        foreach ($data as $field => $value) {
-            if (is_array($value) && isset($value[0]) && $value[0] === 'RAW') {
-                $sets[] = "$field = " . $value[1];
-            } else {
-                $sets[] = "$field = ?";
-                $params[] = $value;
-            }
-        }
-        
-        $whereConditions = [];
-        foreach ($where as $field => $value) {
-            if (is_array($value)) {
-                $whereConditions[] = "$field " . $value[0] . " ?";
-                $params[] = $value[1];
-            } else {
-                $whereConditions[] = "$field = ?";
-                $params[] = $value;
-            }
-        }
-        
-        $sql = sprintf(
-            "UPDATE %s SET %s WHERE %s",
-            escape_identifier($table),
-            implode(',', $sets),
-            implode(' AND ', $whereConditions)
-        );
-        
-        if ($limit !== null) {
-            $sql .= " LIMIT " . (int)$limit;
-        }
-        
-        return $this->query($sql, $params)->rowCount();
-    }
-
-    public function delete($table, $where, $limit = null) {
-        $whereConditions = [];
-        $params = [];
-        
-        foreach ($where as $field => $value) {
-            if (is_array($value)) {
-                switch ($value[0]) {
-                    case 'IN':
-                        $in_placeholders = str_repeat('?,', count($value[1]) - 1) . '?';
-                        $whereConditions[] = "$field IN ($in_placeholders)";
-                        $params = array_merge($params, $value[1]);
-                        break;
-                    default:
-                        $whereConditions[] = "$field " . $value[0] . " ?";
-                        $params[] = $value[1];
-                }
-            } else {
-                $whereConditions[] = "$field = ?";
-                $params[] = $value;
-            }
-        }
-        
-        $sql = sprintf(
-            "DELETE FROM %s WHERE %s",
-            escape_identifier($table),
-            implode(' AND ', $whereConditions)
-        );
-        
-        if ($limit !== null) {
-            $sql .= " LIMIT " . (int)$limit;
-        }
-        
-        return $this->query($sql, $params)->rowCount();
-    }
-
-    // Advanced Query Methods
-    public function raw($sql, $params = []) {
-        return $this->query($sql, $params);
-    }
-
-    public function count($table, $where = []) {
-        $options = [
-            'fields' => ['COUNT(*) as total'],
-            'where' => $where,
-            'single' => true
-        ];
-        return (int)$this->select($table, $options)['total'];
-    }
-
-    public function exists($table, $where) {
-        $options = [
-            'fields' => ['1'],
-            'where' => $where,
-            'limit' => 1
-        ];
-        return !empty($this->select($table, $options));
-    }
-
-    public function increment($table, $field, $where, $amount = 1) {
-        return $this->update($table, [
-            $field => ['RAW', "$field + $amount"]
-        ], $where);
-    }
-
-    public function decrement($table, $field, $where, $amount = 1) {
-        return $this->update($table, [
-            $field => ['RAW', "$field - $amount"]
-        ], $where);
-    }
-
-    // Transaction Management
-    public function beginTransaction() {
-        if ($this->transactions === 0) {
-            $this->connection->beginTransaction();
-        }
-        $this->transactions++;
-        return $this;
-    }
-
-    public function commit() {
-        if ($this->transactions === 1) {
-            $this->connection->commit();
-        }
-        $this->transactions = max(0, $this->transactions - 1);
-        return $this;
-    }
-
-    public function rollback() {
-        if ($this->transactions === 1) {
-            $this->connection->rollBack();
-        }
-        $this->transactions = max(0, $this->transactions - 1);
-        return $this;
-    }
-
-    public function transaction($callback) {
-        try {
-            $this->beginTransaction();
-            $result = $callback($this);
-            $this->commit();
-            return $result;
-        } catch (Exception $e) {
-            $this->rollback();
-            throw $e;
-        }
-    }
-
-    // Cache Management
-    public function enableCache() {
-        $this->cache_enabled = true;
-        return $this;
-    }
-
-    public function disableCache() {
-        $this->cache_enabled = false;
-        return $this;
-    }
-
-    public function clearCache() {
-        $this->cached_queries = [];
-        return $this;
-    }
-
-    private function generateCacheKey($sql, $params) {
-        return md5($sql . serialize($params));
-    }
-
-    // Debug & Logging Methods
-    private function logError($message, $exception, $params = []) {
-        $logEntry = sprintf(
-            "[%s] Error: %s\nException: %s\nFile: %s:%d\nParameters: %s\nTrace:\n%s\n",
-            date('Y-m-d H:i:s'),
-            $message,
-            $exception->getMessage(),
-            $exception->getFile(),
-            $exception->getLine(),
-            print_r($params, true),
-            $exception->getTraceAsString()
-        );
-        
-        error_log($logEntry, 3, __DIR__ . '/../logs/database.log');
-    }
-
-    private function logQuery($sql, $params, $executionTime) {
-        if (IS_DEVELOPMENT) {
-            $this->queryLog[] = [
-                'sql' => $sql,
-                'params' => $params,
-                'execution_time' => $executionTime,
-                'timestamp' => date('Y-m-d H:i:s'),
-                'backtrace' => debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS)
-            ];
-        }
-    }
-
-    public function getQueryLog() {
-        return $this->queryLog;
-    }
-
-    public function getQueryCount() {
-        return $this->queryCount;
-    }
-
-    // Connection Management
-    public function disconnect() {
-        $this->connection = null;
-        self::$instance = null;
-    }
-
-    public function reconnect() {
-        $this->disconnect();
-        return self::getInstance();
-    }
-
-    // Prevent cloning
-    private function __clone() {}
     
-    // Cleanup
-    public function __destruct() {
-        $this->disconnect();
-    }
-}
-
-// Global Helper Functions
-function db() {
-    return Database::getInstance();
-}
-
-function escape_identifier($identifier) {
-    return '`' . str_replace('`', '``', $identifier) . '`';
-}
-
-function paginate($table, $page = 1, $perPage = 10, $where = [], $options = []) {
-    $db = db();
+    // Get user stats
+    $taskManager = new TaskManager();
+    $pointManager = new PointManager();
+    $referralManager = new ReferralManager();
     
-    // Get total count
-    $total = $db->count($table, $where);
-    
-    // Get page data
-    $pageOptions = array_merge($options, [
-        'where' => $where,
-        'limit' => $perPage,
-        'offset' => ($page - 1) * $perPage
-    ]);
-    
-    $items = $db->select($table, $pageOptions);
-    
-    return [
-        'items' => $items,
-        'total' => $total,
-        'page' => $page,
-        'per_page' => $perPage,
-        'total_pages' => ceil($total / $perPage),
-        'has_more' => ($page * $perPage) < $total
+    $stats = [
+        'points' => [
+            'total' => $user['points'],
+            'earned_today' => $pointManager->getPointsEarnedToday($userId),
+            'earned_total' => $pointManager->getTotalPointsEarned($userId),
+            'spent_total' => $pointManager->getTotalPointsSpent($userId)
+        ],
+        'tasks' => [
+            'completed_today' => $taskManager->getCompletedTasksCount($userId, 'today'),
+            'completed_total' => $taskManager->getCompletedTasksCount($userId),
+            'available' => $taskManager->getAvailableTasksCount($userId),
+            'pending_verification' => $taskManager->getPendingVerificationCount($userId)
+        ],
+        'referrals' => [
+            'total' => $referralManager->getTotalReferrals($userId),
+            'active' => $referralManager->getActiveReferrals($userId),
+            'points_earned' => $referralManager->getTotalReferralPoints($userId),
+            'today' => $referralManager->getReferralsCount($userId, 'today')
+        ]
     ];
+    
+    // Get available tasks
+    $page = max(1, (int)($_GET['page'] ?? 1));
+    $perPage = 10;
+    
+    $tasks = $taskManager->getAvailableTasks($userId, $page, $perPage);
+    $userTasks = $taskManager->getUserTasks($userId, ['limit' => 5]);
+    
+    // Get recent activities
+    $activityManager = new ActivityManager();
+    $recentActivities = $activityManager->getUserActivities($userId, ['limit' => 10]);
+    
+    // Get leaderboard position
+    $leaderboard = new LeaderboardManager();
+    $userRank = $leaderboard->getUserRank($userId);
+    
+    // Get referral code and link
+    $referralCode = $user['referral_code'];
+    $referralLink = SITE_URL . '/register.php?ref=' . $referralCode;
+    
+    // Get notifications
+    $notificationManager = new NotificationManager();
+    $notifications = $notificationManager->getUnreadNotifications($userId);
+    
+} catch (Exception $e) {
+    error_log("Dashboard Error: " . $e->getMessage());
+    $_SESSION['error'] = 'An error occurred while loading the dashboard.';
+    header('Location: error.php');
+    exit;
 }
+
+// Page title
+$pageTitle = 'Dashboard';
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?php echo $pageTitle . ' - ' . SITE_NAME; ?></title>
+    
+    <!-- Styles -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="/assets/css/dashboard.css" rel="stylesheet">
+    
+    <!-- Custom Styles -->
+    <style>
+        .stat-card {
+            background: linear-gradient(135deg, var(--bs-primary) 0%, var(--bs-primary-dark) 100%);
+            color: white;
+            border-radius: 1rem;
+            padding: 1.5rem;
+            height: 100%;
+            transition: transform 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .task-card {
+            border-radius: 1rem;
+            border: none;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease;
+        }
+        
+        .task-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .activity-timeline {
+            position: relative;
+            padding-left: 2rem;
+        }
+        
+        .activity-timeline::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--bs-primary);
+            opacity: 0.2;
+        }
+        
+        .activity-item {
+            position: relative;
+            padding-bottom: 1.5rem;
+        }
+        
+        .activity-item::before {
+            content: '';
+            position: absolute;
+            left: -2rem;
+            top: 0.5rem;
+            width: 1rem;
+            height: 1rem;
+            border-radius: 50%;
+            background: var(--bs-primary);
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <?php include 'includes/navbar.php'; ?>
+    
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar -->
+            <?php include 'includes/sidebar.php'; ?>
+            
+            <!-- Main Content -->
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+                <!-- Welcome Section -->
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                    <h1 class="h2">Welcome back, <?php echo htmlspecialchars($user['username'] ?: formatWalletAddress($user['wallet_address'])); ?>!</h1>
+                    <div class="btn-toolbar mb-2 mb-md-0">
+                        <button type="button" class="btn btn-sm btn-outline-primary me-2" onclick="refreshStats()">
+                            <i class="fas fa-sync-alt"></i> Refresh
+                        </button>
+                        <button type="button" class="btn btn-sm btn-primary" onclick="claimRewards()">
+                            <i class="fas fa-gift"></i> Claim Rewards
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Stats Cards -->
+                <div class="row g-4 mb-4">
+                    <!-- Points Card -->
+                    <div class="col-md-3">
+                        <div class="stat-card">
+                            <h5 class="card-title mb-3">Total Points</h5>
+                            <h2 class="mb-2"><?php echo number_format($stats['points']['total']); ?></h2>
+                            <p class="mb-0">
+                                <span class="text-success">
+                                    <i class="fas fa-arrow-up"></i>
+                                    <?php echo number_format($stats['points']['earned_today']); ?>
+                                </span>
+                                <small>Today</small>
+                            </p>
+                        </div>
+                    </div>
+                    
+                    <!-- Tasks Card -->
+                    <div class="col-md-3">
+                        <div class="stat-card">
+                            <h5 class="card-title mb-3">Tasks Completed</h5>
+                            <h2 class="mb-2"><?php echo number_format($stats['tasks']['completed_total']); ?></h2>
+                            <p class="mb-0">
+                                <span class="text-success">
+                                    <i class="fas fa-check"></i>
+                                    <?php echo number_format($stats['tasks']['completed_today']); ?>
+                                </span>
+                                <small>Today</small>
+                            </p>
+                        </div>
+                    </div>
+                    
+                    <!-- Referrals Card -->
+                    <div class="col-md-3">
+                        <div class="stat-card">
+                            <h5 class="card-title mb-3">Total Referrals</h5>
+                            <h2 class="mb-2"><?php echo number_format($stats['referrals']['total']); ?></h2>
+                            <p class="mb-0">
+                                <span class="text-success">
+                                    <i class="fas fa-users"></i>
+                                    <?php echo number_format($stats['referrals']['today']); ?>
+                                </span>
+                                <small>Today</small>
+                            </p>
+                        </div>
+                    </div>
+                    
+                    <!-- Rank Card -->
+                    <div class="col-md-3">
+                        <div class="stat-card">
+                            <h5 class="card-title mb-3">Leaderboard Rank</h5>
+                            <h2 class="mb-2">#<?php echo number_format($userRank); ?></h2>
+                            <p class="mb-0">
+                                <small>Out of <?php echo number_format($leaderboard->getTotalUsers()); ?> users</small>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Available Tasks -->
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Available Tasks</h5>
+                        <a href="tasks.php" class="btn btn-sm btn-primary">View All</a>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-4">
+                            <?php foreach ($tasks['items'] as $task): ?>
+                            <div class="col-md-6">
+                                <div class="task-card card">
+                                    <div class="card-body">
+                                        <div class="d-flex justify-content-between align-items-start mb-3">
+                                            <h5 class="card-title mb-0"><?php echo htmlspecialchars($task['title']); ?></h5>
+                                            <span class="badge bg-primary"><?php echo number_format($task['points']); ?> Points</span>
+                                        </div>
+                                        <p class="card-text"><?php echo htmlspecialchars($task['description']); ?></p>
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <small class="text-muted">
+                                                <i class="fas fa-clock"></i>
+                                                <?php echo timeLeft($task['end_date']); ?>
+                                            </small>
+                                            <button type="button" class="btn btn-sm btn-primary" 
+                                                    onclick="startTask(<?php echo $task['id']; ?>)">
+                                                Start Task
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <?php endforeach; ?>
+                        </div>
+                        
+                        <?php if ($tasks['total_pages'] > 1): ?>
+                        <nav class="mt-4">
+                            <ul class="pagination justify-content-center">
+                                <?php for ($i = 1; $i <= $tasks['total_pages']; $i++): ?>
+                                <li class="page-item <?php echo $i === $page ? 'active' : ''; ?>">
+                                    <a class="page-link" href="?page=<?php echo $i; ?>"><?php echo $i; ?></a>
+                                </li>
+                                <?php endfor; ?>
+                            </ul>
+                        </nav>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                
+                <div class="row">
+                    <!-- Recent Activities -->
+                    <div class="col-md-8">
+                        <div class="card mb-4">
+                            <div class="card-header">
+                                <h5 class="mb-0">Recent Activities</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="activity-timeline">
+                                    <?php foreach ($recentActivities as $activity): ?>
+                                    <div class="activity-item">
+                                        <div class="d-flex justify-content-between">
+                                            <div>
+                                                <h6 class="mb-0"><?php echo htmlspecialchars($activity['action']); ?></h6>
+                                                <p class="text-muted mb-0"><?php echo htmlspecialchars($activity['description']); ?></p>
+                                            </div>
+                                            <small class="text-muted">
+                                                <?php echo timeAgo($activity['created_at']); ?>
+                                            </small>
+                                        </div>
+                                    </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Referral Info -->
+                    <div class="col-md-4">
+                        <div class="card mb-4">
+                            <div class="card-header">
+                                <h5 class="mb-0">Referral Program</h5>
+                            </div>
+                            <div class="card-body">
+                                <p>Share your referral link and earn points for each new user!</p>
+                                <div class="input-group mb-3">
+                                    <input type="text" class="form-control" id="referralLink" 
+                                           value="<?php echo htmlspecialchars($referralLink); ?>" readonly>
+                                    <button class="btn btn-outline-primary" type="button" onclick="copyReferralLink()">
+                                        <i class="fas fa-copy"></i>
+                                    </button>
+                                </div>
+                                <hr>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span>Total Referrals:</span>
+                                    <strong><?php echo number_format($stats['referrals']['total']); ?></strong>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span>Active Referrals:</span>
+                                    <strong><?php echo number_format($stats['referrals']['active']); ?></strong>
+                                </div>
+                                <div class="d-flex justify-content-between">
+                                    <span>Points Earned:</span>
+                                    <strong><?php echo number_format($stats['referrals']['points_earned']); ?></strong>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+    
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/web3/4.1.1/web3.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="/assets/js/dashboard.js"></script>
+    
+    <script>
+        // Refresh Stats
+        async function refreshStats() {
+            try {
+                const response = await fetch('api/stats.php', {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    updateDashboardStats(data.stats);
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Stats Updated',
+                        toast: true,
+                        position: 'top-end',
+                        showConfirmButton: false,
+                        timer: 3000
+                    });
+                } else {
+                    throw new Error(data.message);
+                }
+            } catch (error) {
+                console.error('Error refreshing stats:', error);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: 'Failed to refresh stats. Please try again.'
+                });
+            }
+        }
+
+        // Start Task
+        async function startTask(taskId) {
+            try {
+                const response = await fetch('api/tasks.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        action: 'start',
+                        task_id: taskId
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    window.location.href = `task.php?id=${taskId}`;
+                } else {
+                    throw new Error(data.message);
+                }
+            } catch (error) {
+                console.error('Error starting task:', error);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: error.message || 'Failed to start task. Please try again.'
+                });
+            }
+        }
+
+        // Copy Referral Link
+        function copyReferralLink() {
+            const referralLink = document.getElementById('referralLink');
+            referralLink.select();
+            document.execCommand('copy');
+            
+            Swal.fire({
+                icon: 'success',
+                title: 'Copied!',
+                text: 'Referral link copied to clipboard',
+                toast: true,
+                position: 'top-end',
+                showConfirmButton: false,
+                timer: 3000
+            });
+        }
+
+        // Claim Rewards
+        async function claimRewards() {
+            try {
+                const response = await fetch('api/rewards.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        action: 'claim'
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Success!',
+                        text: `Claimed ${data.points} points successfully!`,
+                        confirmButtonText: 'OK'
+                    }).then(() => {
+                        refreshStats();
+                    });
+                } else {
+                    throw new Error(data.message);
+                }
+            } catch (error) {
+                console.error('Error claiming rewards:', error);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: error.message || 'Failed to claim rewards. Please try again.'
+                });
+            }
+        }
+
+        // Update Dashboard Stats
+        function updateDashboardStats(stats) {
+            // Points
+            document.querySelector('.points-total').textContent = formatNumber(stats.points.total);
+            document.querySelector('.points-today').textContent = formatNumber(stats.points.earned_today);
+            
+            // Tasks
+            document.querySelector('.tasks-completed').textContent = formatNumber(stats.tasks.completed_total);
+            document.querySelector('.tasks-today').textContent = formatNumber(stats.tasks.completed_today);
+            
+            // Referrals
+            document.querySelector('.referrals-total').textContent = formatNumber(stats.referrals.total);
+            document.querySelector('.referrals-today').textContent = formatNumber(stats.referrals.today);
+            
+            // Rank
+            document.querySelector('.user-rank').textContent = `#${formatNumber(stats.rank)}`;
+        }
+
+        // Format Numbers
+        function formatNumber(num) {
+            return new Intl.NumberFormat().format(num);
+        }
+
+        // Initialize Tooltips
+        var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+        var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+            return new bootstrap.Tooltip(tooltipTriggerEl);
+        });
+
+        // Auto Refresh Stats
+        setInterval(refreshStats, 300000); // Every 5 minutes
+    </script>
+</body>
+</html>
